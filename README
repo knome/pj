@@ -1,0 +1,25 @@
+
+"pj" is a simple process jail. 
+
+Copyright (c) 2016 Michael Speer <knomenet@gmail.com>
+Released under Modified BSD License ( see source )
+
+usage:
+
+    pj program-to-run --program args
+    pj --stats program-to-run --program args
+    pj --kill-on-signal program-to-run --program args
+    pj --wait-on-signal --kill-on-signal program-to-run --program args
+
+It runs a specified program, capturing all child processes
+forked from the original, and when the original exits,
+proceeds to kill all processes it spawned. This prevents
+processes from escaping and accidentally daemonizing.
+
+By default, pj passes common control signals to the process.
+Optionally, pj will instead interpret these signals as a sign
+to kill the process and all of its children.
+
+By default, pj begins killing child processes as soon as the initial
+child process exits. Optionally ( --wait-on-signal ), pj will wait
+until it receives a signal to begin collecting the child processes.
