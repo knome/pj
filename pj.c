@@ -276,6 +276,7 @@ static int setup_options( int argc, char ** argv ){
       { "stats"          , no_argument, 0, 0 },
       { "kill-on-signal" , no_argument, 0, 0 },
       { "wait-for-signal", no_argument, 0, 0 },
+      { "all"            , no_argument, 0, 0 },
       { 0                , 0          , 0 ,0 },
     };
     
@@ -295,6 +296,11 @@ static int setup_options( int argc, char ** argv ){
         g_options.killOnSignal = 1;
       } else if( optionIndex == 3 ){
         g_options.waitForSignal = 1;
+      } else if( optionIndex == 4 ){
+        g_options.verbose       = 1 ;
+        g_options.showstats     = 1 ;
+        g_options.killOnSignal  = 1 ;
+        g_options.waitForSignal = 1 ;
       } else {
         fprintf( stderr, "unexpected long option index in argument parsing\n" );
       }
