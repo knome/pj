@@ -97,15 +97,15 @@ static int  start_main_child       ( int, char **                    );
 static int g_ourpid = 0 ;
 
 static struct {
-  int verbose       ;
-  int showstats     ;
-  int killOnSignal  ;
-  int waitForSignal ;
+  int verbose         ;
+  int showstats       ;
+  int killOnSignal    ;
+  int waitForChildren ;
 } g_options = {
-  .verbose       = 0,
-  .showstats     = 0,
-  .killOnSignal  = 0,
-  .waitForSignal = 0,
+  .verbose         = 0,
+  .showstats       = 0,
+  .killOnSignal    = 0,
+  .waitForChildren = 0,
 };
 
 static struct {
@@ -131,7 +131,7 @@ static struct {
 
 static sigset_t g_mask, g_oldmask ;
 
-// this prevents the very minor chance you're using waitForSignal to allow daemons
+// this prevents the very minor chance you're using waitForChildren to allow daemons
 // the original process tossed off to linger around, and one of them happens to spawn
 // a process with the same pid as the original main child process causing the exit code
 // to be overridden when it is reaped. this ensures that we only record the exit code
@@ -176,15 +176,12 @@ int main( int argc, char ** argv ){
       fflush( stderr );
     }
     
-    int receivedSignal = 0 ;
     // if any non-sigchld signals are pending, handle them
     // 
     if( g_received.sigHup  || g_received.sigInt  || g_received.sigQuit
         ||
         g_received.sigTerm || g_received.sigUsr1 || g_received.sigUsr2
     ){
-      receivedSignal = 1 ;
-      
       if( g_options.killOnSignal ){
         goto kill_and_reap_children ;
       } else {
@@ -205,13 +202,18 @@ int main( int argc, char ** argv ){
       reap_children();
     }
     
-    // if we reaped the mainChild
-    //   we are not explicitly waiting
-    //     or
-    //   we have received any of the usually passthrough signals
-    // 
-    if( g_mainIsDone && ( (! g_options.waitForSignal) || receivedSignal ) ){
-      goto kill_and_reap_children ;
+    // if the mainChild is done and we're not waiting for a signal
+    if( g_mainIsDone ){
+      
+      if( !g_options.waitForChildren ){
+        goto kill_and_reap_children ;
+      }
+      
+      int found = find_children();
+      if( found == 0 ){
+        goto no_children_remain ;
+      }
+      
     }
     
     // end of main loop
@@ -227,11 +229,13 @@ int main( int argc, char ** argv ){
     
     if( found == 0 ){
       // no children remain
-      break;
+      goto no_children_remain ;
     }
     
     kill_and_reap_children( found );
   }
+  
+ no_children_remain:
   
   if( g_options.showstats ){
     fprintf( stderr, "children-reaped : %" PRIu64 "\n", g_stats.reaped );
@@ -272,12 +276,12 @@ static int setup_options( int argc, char ** argv ){
     if( ! optind ){ optind = 1; }
     
     static struct option options[] = {
-      { "verbose"        , no_argument, 0, 0 },
-      { "stats"          , no_argument, 0, 0 },
-      { "kill-on-signal" , no_argument, 0, 0 },
-      { "wait-for-signal", no_argument, 0, 0 },
-      { "all"            , no_argument, 0, 0 },
-      { 0                , 0          , 0 ,0 },
+      { "verbose"          , no_argument, 0, 0 },
+      { "stats"            , no_argument, 0, 0 },
+      { "kill-on-signal"   , no_argument, 0, 0 },
+      { "wait-for-children", no_argument, 0, 0 },
+      { "all"              , no_argument, 0, 0 },
+      { 0                  , 0          , 0 ,0 },
     };
     
     int optionIndex ;
@@ -295,12 +299,12 @@ static int setup_options( int argc, char ** argv ){
       } else if( optionIndex == 2 ){
         g_options.killOnSignal = 1;
       } else if( optionIndex == 3 ){
-        g_options.waitForSignal = 1;
+        g_options.waitForChildren = 1;
       } else if( optionIndex == 4 ){
-        g_options.verbose       = 1 ;
-        g_options.showstats     = 1 ;
-        g_options.killOnSignal  = 1 ;
-        g_options.waitForSignal = 1 ;
+        g_options.verbose         = 1 ;
+        g_options.showstats       = 1 ;
+        g_options.killOnSignal    = 1 ;
+        g_options.waitForChildren = 1 ;
       } else {
         fprintf( stderr, "unexpected long option index in argument parsing\n" );
       }
