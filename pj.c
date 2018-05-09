@@ -172,7 +172,7 @@ int main( int argc, char ** argv ){
     wait_on_signal();
     
     if( g_received.unknown ){
-      fprintf( stderr, "received unknown signal in callback\n" );
+      fprintf( stderr, "pj::received unknown signal in callback\n" );
       fflush( stderr );
     }
     
@@ -238,8 +238,8 @@ int main( int argc, char ** argv ){
  no_children_remain:
   
   if( g_options.showstats ){
-    fprintf( stderr, "children-reaped : %" PRIu64 "\n", g_stats.reaped );
-    fprintf( stderr, "children-killed : %" PRIu64 "\n", g_stats.killed );
+    fprintf( stderr, "pj::children-reaped : %" PRIu64 "\n", g_stats.reaped );
+    fprintf( stderr, "pj::children-killed : %" PRIu64 "\n", g_stats.killed );
     fflush( stderr );
   }
   
@@ -259,7 +259,7 @@ static void reap_children( void ){
     g_stats.reaped ++ ;
     
     if( g_options.verbose ){
-      fprintf( stderr, "reaped child : %d\n", reapedPid );
+      fprintf( stderr, "pj::reaped child : %d\n", reapedPid );
       fflush( stderr );
     }
     
@@ -306,19 +306,19 @@ static int setup_options( int argc, char ** argv ){
         g_options.killOnSignal    = 1 ;
         g_options.waitForChildren = 1 ;
       } else {
-        fprintf( stderr, "unexpected long option index in argument parsing\n" );
+        fprintf( stderr, "pj::unexpected long option index in argument parsing\n" );
       }
     }
     
     if( cc > 0 ){
-      fprintf( stderr, "unexpected error in argument parsing\n" );
+      fprintf( stderr, "pj::unexpected error in argument parsing\n" );
       exit(1);
     }
     
   }
   
   if( ! (argc - optind ) ){
-    fprintf( stderr, "you must specify the program to run\n" );
+    fprintf( stderr, "pj::you must specify the program to run\n" );
     exit(1);
   }
   
@@ -339,7 +339,7 @@ static void setup_signal_masks( void ){
 static void set_ourself_as_reaper( void ){
   int result = prctl( PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0 );
   if( result != 0 ){
-    fprintf( stderr, "could not set process to be subreaper\n" );
+    fprintf( stderr, "pj::could not set process to be subreaper\n" );
     fflush( stderr );
     exit( 1 );
   }
@@ -361,7 +361,7 @@ static void setup_handler( int signum, void(*handler)(int) ){
   sigemptyset( &sa.sa_mask );
   sa.sa_flags = SA_RESTART ;
   if( -1 == sigaction( signum, &sa, NULL ) ){
-    fprintf( stderr, "could not set signal(%d) handler : %d : %s\n", signum, errno, strerror( errno ) );
+    fprintf( stderr, "pj::could not set signal(%d) handler : %d : %s\n", signum, errno, strerror( errno ) );
     exit( 1 );
   }
 }
@@ -422,28 +422,28 @@ static void pass_on_signal( int pid, int signum ){
       
     case EINVAL:
       if( g_options.verbose ){
-        fprintf( stderr, "failed to pass on signal : invalid signal number : %d\n", signum );
+        fprintf( stderr, "pj::failed to pass on signal : invalid signal number : %d\n", signum );
         fflush( stderr );
         break;
       }
       
     case ESRCH:
       if( g_options.verbose ){
-        fprintf( stderr, "failed to pass on signal : child process not found\n" );
+        fprintf( stderr, "pj::failed to pass on signal : child process not found\n" );
         fflush( stderr );
         break;
       }
       
     case EPERM:
       if( g_options.verbose ){
-        fprintf( stderr, "failed to pass on signal : permissions error\n" );
+        fprintf( stderr, "pj::failed to pass on signal : permissions error\n" );
         fflush( stderr );
         break ;
       }
       
     default:
       if( g_options.verbose ){
-        fprintf( stderr, "failed to pass on signal : bad kill return : %d\n", result );
+        fprintf( stderr, "pj::failed to pass on signal : bad kill return : %d\n", result );
         fflush( stderr );
         break;
       }
@@ -509,7 +509,7 @@ static int stat_to_child( struct dirent * entry, struct Child * child ){
     
     // otherwise, abandon this attempt
     // 
-    fprintf( stderr, "/proc/<pid>/stat open error\n" );
+    fprintf( stderr, "pj::/proc/<pid>/stat open error\n" );
     return 0;
   }
   
@@ -523,7 +523,7 @@ static int stat_to_child( struct dirent * entry, struct Child * child ){
     
     // otherwise, abandon attempt
     // 
-    fprintf( stderr, "/proc/<pid>/stat read error\n" );
+    fprintf( stderr, "pj::/proc/<pid>/stat read error\n" );
     close( fd );
     return 0;
   }
@@ -535,22 +535,103 @@ static int stat_to_child( struct dirent * entry, struct Child * child ){
   // now parse out the data we want
   // pid, ppid and state
   
-  result = sscanf(
-    statdata
-    , "%d %*s %c %d "
-    , & child->pid
-    , & child->state
-    , & child->ppid
-  );
-  
-  if( result == EOF ){
-    fprintf( stderr, "sscanf error\n" );
-    return 0;
-  }
-  
-  if( result < 3 ){
-    fprintf( stderr, "sscanf failed to find all items\n" );
-    return 0;
+  // 
+  // so this breaks if a process has a space in the name
+  // not even just a child process. any process visible in /proc
+  // thanks firefox (Web Content) subprocesses
+  // we'll need to count the number of spaces and break on that
+  // 
+  {
+    unsigned ii      = 0 ;
+    unsigned nSpaces = 0 ;
+    while( 1 ){
+      switch( statdata[ ii ] ){
+      case 0:
+        // we didn't get the whole line
+        fprintf( stderr, "pj::failed to read full stat from /proc/<pid>/stat\n" );
+        close( fd );
+        return 0;
+        
+      case '\n':
+        // got it
+        goto doneCountingSpaces ;
+        
+      case ' ':
+        nSpaces ++ ;
+        // fallthrough
+        
+      default:
+        ii++ ;
+      }
+    }
+  doneCountingSpaces:;
+    
+    // we should have 52 items in there; 51 spaces
+    // but the name can be more than one
+    // we subtract 50 from nSpacs to get the number of items
+    // 
+    if( nSpaces < 51 ){
+      fprintf( stderr, "pj::found fewer than 51 spaces during stat\n" );
+      return 0;
+    }
+    
+    // nSpaces - 50 for name bits
+    // the +1 is to discard the leading pid
+    //   PID (name) ...
+    unsigned nSkipBits = nSpaces - 50 + 1 ;
+    
+    // now we scan along the line sscanf'ing the crap we want off of it
+    
+    // first the pid
+    // 
+    if( sscanf( statdata, "%d", & child->pid ) != 1 ){
+      fprintf( stderr, "pj::sscanf error\n" );
+      return 0;
+    }
+    
+    // now skip the proper number of spaces
+    char * cursor = statdata ;
+    while( 1 ){
+      switch( *cursor ){
+      case ' ':
+        nSkipBits  -- ;
+        cursor     ++ ;
+        if( ! nSkipBits ){
+          goto scandone ;
+        }
+        break ;
+        
+      case '\n':
+        fprintf( stderr, "pj::unexpected end of line\n" );
+        return 0 ;
+        
+      case '\0':
+        fprintf( stderr, "pj::unexpected null\n" );
+        return 0 ;
+        
+      default:
+        cursor ++ ;
+      }
+    }
+  scandone:;
+    
+    result = sscanf(
+      cursor
+      , "%c %d "
+      , & child->state
+      , & child->ppid
+    );
+    
+    if( result == EOF ){
+      fprintf( stderr, "pj::sscanf error\n" );
+      return 0;
+    }
+    
+    if( result < 2 ){
+      fprintf( stderr, "pj::sscanf failed to find all items in : %s\n", statdata );
+      return 0;
+    }
+    
   }
   
   return 1 ;
@@ -581,7 +662,7 @@ static int kill_and_reap_children( int found ){
     case 'W': kill_child( child, "paging"                   ); break;
       
     default:
-      fprintf( stderr, "unknown child state pid:%d ppid:%d state:%c\n", child->pid, child->ppid, child->state );
+      fprintf( stderr, "pj::unknown child state pid:%d ppid:%d state:%c\n", child->pid, child->ppid, child->state );
       fflush( stderr );
     }
   }
@@ -593,7 +674,7 @@ static int kill_and_reap_children( int found ){
 
 void kill_child( struct Child * child, char * description ){
   if( -1 == kill( child->pid, SIGKILL ) ){
-    fprintf( stderr, "error killing %s child( %d ) : %d : %s\n"
+    fprintf( stderr, "pj::error killing %s child( %d ) : %d : %s\n"
              , description
              , child->pid
              , errno
@@ -602,7 +683,7 @@ void kill_child( struct Child * child, char * description ){
   } else {
     g_stats.killed ++ ;
     if( g_options.verbose ){
-      fprintf( stderr, "kill-child pid:%d state:%c\n", child->pid, child->state );
+      fprintf( stderr, "pj::kill-child pid:%d state:%c\n", child->pid, child->state );
     }
   }
 }
@@ -611,25 +692,25 @@ int start_main_child( int argc, char ** argv ){
   int childpid = fork();
   
   if( childpid == -1 ){
-    fprintf( stderr, "fork failed : %d : %s\n", errno, strerror( errno ) );
+    fprintf( stderr, "pj::fork failed : %d : %s\n", errno, strerror( errno ) );
     exit(1);
   }
   
   if( childpid != 0 ){
     if( g_options.verbose ){
-      fprintf( stderr, "forked-child pid:%d\n", childpid );
+      fprintf( stderr, "pj::forked-child pid:%d\n", childpid );
     }
     
     return childpid ;
   }
   
   if( -1 == execvp( *argv, argv ) ){
-    fprintf( stderr, "exec in fork failed : %d : %s\n", errno, strerror( errno ) );
+    fprintf( stderr, "pj::exec in fork failed : %d : %s\n", errno, strerror( errno ) );
     exit(1);
   }
   
   // we can't reach this as if execvp doesn't have an error, it will have replaced the process
   //
-  fprintf( stderr, "impossible error\n" );
+  fprintf( stderr, "pj::impossible error\n" );
   exit(1);
 }
