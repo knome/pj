@@ -252,6 +252,9 @@ static void reap_children( void ){
   
   while( reapedPid = waitpid( -1, &status, WNOHANG ) ){
     if( reapedPid < 0 ){
+      if( errno == EINTR ){
+        continue ;
+      }
       // nothing more to reap
       break ;
     }
