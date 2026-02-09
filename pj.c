@@ -49,18 +49,16 @@
 
 ///// ///// /////
 
-#define _POSIX_SOURCE
-#define _BSD_SOURCE
+#define _POSIX_C_SOURCE
+#define _DEFAULT_SOURCE
 
 #include <sys/prctl.h>
 #include <stdio.h>
 #include <signal.h>
 #include <sys/wait.h>
-#include <linux/wait.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/eventfd.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <dirent.h>
@@ -87,10 +85,10 @@ static void pass_on_signal         ( int, int                        );
 static int  find_children          ( void                            );
 static int  stat_to_child          ( struct dirent *, struct Child * );
 static int  isnum                  ( char *                          );
-static int  kill_and_reap_children ( int                             );
+static void kill_and_reap_children ( int                             );
 static void reap_children          ( void                            );
 static void kill_child             ( struct Child *, char *          );
-static int  start_main_child       ( int, char **                    );
+static int  start_main_child       ( char **                         );
 
 ///// ///// /////
 
@@ -110,7 +108,7 @@ static struct {
 
 static struct {
   volatile sig_atomic_t signalPending ;
-  volatile sig_atomic_t  unknown      ;
+  volatile sig_atomic_t unknown       ;
   
   volatile sig_atomic_t sigChld ;
   volatile sig_atomic_t sigHup  ;
@@ -120,7 +118,8 @@ static struct {
   volatile sig_atomic_t sigUsr1 ;
   volatile sig_atomic_t sigUsr2 ;
 } g_received = {
-.sigHup  = 0,
+  .signalPending = 0,
+  .sigHup  = 0,
   .sigInt  = 0,
   .sigQuit = 0,
   .sigTerm = 0,
@@ -166,7 +165,7 @@ int main( int argc, char ** argv ){
   set_ourself_as_reaper();
   setup_signal_handlers();
   
-  g_mainChildPid = start_main_child( argc, &argv[ lastOptionIndex ] );
+  g_mainChildPid = start_main_child( &argv[ lastOptionIndex ] );
   
   while(1){
     wait_on_signal();
@@ -178,20 +177,22 @@ int main( int argc, char ** argv ){
     
     // if any non-sigchld signals are pending, handle them
     // 
-    if( g_received.sigHup  || g_received.sigInt  || g_received.sigQuit
-        ||
-        g_received.sigTerm || g_received.sigUsr1 || g_received.sigUsr2
-    ){
-      if( g_options.killOnSignal ){
-        goto kill_and_reap_children ;
-      } else {
-        // !killOnSignal, merely pass through signals instead      
-        if( g_received.sigHup  ){ g_received.sigHup  = 0 ; pass_on_signal( g_mainChildPid, SIGHUP  ); }
-        if( g_received.sigInt  ){ g_received.sigInt  = 0 ; pass_on_signal( g_mainChildPid, SIGINT  ); }
-        if( g_received.sigQuit ){ g_received.sigQuit = 0 ; pass_on_signal( g_mainChildPid, SIGQUIT ); }
-        if( g_received.sigTerm ){ g_received.sigTerm = 0 ; pass_on_signal( g_mainChildPid, SIGTERM ); }
-        if( g_received.sigUsr1 ){ g_received.sigUsr1 = 0 ; pass_on_signal( g_mainChildPid, SIGUSR1 ); }
-        if( g_received.sigUsr2 ){ g_received.sigUsr2 = 0 ; pass_on_signal( g_mainChildPid, SIGUSR2 ); }
+    if( !g_mainIsDone ){
+      if( g_received.sigHup  || g_received.sigInt  || g_received.sigQuit
+          ||
+          g_received.sigTerm || g_received.sigUsr1 || g_received.sigUsr2
+      ){
+        if( g_options.killOnSignal ){
+          goto handle_kill_and_reap_children ;
+        } else {
+          // !killOnSignal, merely pass through signals instead
+          if( g_received.sigHup  ){ g_received.sigHup  = 0 ; pass_on_signal( g_mainChildPid, SIGHUP  ); }
+          if( g_received.sigInt  ){ g_received.sigInt  = 0 ; pass_on_signal( g_mainChildPid, SIGINT  ); }
+          if( g_received.sigQuit ){ g_received.sigQuit = 0 ; pass_on_signal( g_mainChildPid, SIGQUIT ); }
+          if( g_received.sigTerm ){ g_received.sigTerm = 0 ; pass_on_signal( g_mainChildPid, SIGTERM ); }
+          if( g_received.sigUsr1 ){ g_received.sigUsr1 = 0 ; pass_on_signal( g_mainChildPid, SIGUSR1 ); }
+          if( g_received.sigUsr2 ){ g_received.sigUsr2 = 0 ; pass_on_signal( g_mainChildPid, SIGUSR2 ); }
+        }
       }
     }
     
@@ -206,12 +207,12 @@ int main( int argc, char ** argv ){
     if( g_mainIsDone ){
       
       if( !g_options.waitForChildren ){
-        goto kill_and_reap_children ;
+        goto handle_kill_and_reap_children ;
       }
       
       int found = find_children();
       if( found == 0 ){
-        goto no_children_remain ;
+        goto handle_no_children_remain ;
       }
       
     }
@@ -219,7 +220,7 @@ int main( int argc, char ** argv ){
     // end of main loop
   }
   
- kill_and_reap_children:
+ handle_kill_and_reap_children:
   while(1){
     int found = find_children();
     if( found < 0 ){
@@ -229,13 +230,17 @@ int main( int argc, char ** argv ){
     
     if( found == 0 ){
       // no children remain
-      goto no_children_remain ;
+      goto handle_no_children_remain ;
     }
     
     kill_and_reap_children( found );
+    
+    // small delay between swings so we're not burning as much CPU
+    // on D processes as we would without it.
+    usleep(1000);
   }
   
- no_children_remain:
+ handle_no_children_remain:
   
   if( g_options.showstats ){
     fprintf( stderr, "pj::children-reaped : %" PRIu64 "\n", g_stats.reaped );
@@ -250,13 +255,31 @@ static void reap_children( void ){
   int reapedPid ;
   int status    ;
   
-  while( reapedPid = waitpid( -1, &status, WNOHANG ) ){
-    if( reapedPid < 0 ){
+  while(1){
+    reapedPid = waitpid( -1, &status, WNOHANG );
+    
+    if( reapedPid == 0 ){
+      // no children have changed state.
+      // just in case we haven't sent kills to everything,
+      //   go ahead and exit and let's kill them some more
+      return ;
+    } else if( reapedPid == -1 ){
       if( errno == EINTR ){
+        // syscall interrupted
         continue ;
+      } else if( errno == ECHILD ){
+        // nothing more to reap
+        return ;
+      } else {
+        // error during waitpid
+        fprintf(
+          stderr,
+          "pj::error waiting for child, errno=%d, strerror=%s\n",
+          errno,
+          strerror( errno )
+        );
+        return ;
       }
-      // nothing more to reap
-      break ;
     }
     
     g_stats.reaped ++ ;
@@ -268,7 +291,12 @@ static void reap_children( void ){
     
     if( ! g_mainIsDone && reapedPid == g_mainChildPid ){
       g_mainIsDone = 1 ;
-      g_mainExit   = WEXITSTATUS( status );
+      
+      if( WIFEXITED( status ) ){
+        g_mainExit = WEXITSTATUS( status );
+      } else {
+        g_mainExit = 128 + WTERMSIG( status );
+      }
     }
   }
 }
@@ -392,7 +420,7 @@ static void wait_on_signal(){
   
   sigprocmask( SIG_BLOCK, &g_mask, &g_oldmask );
   
-  do {
+  while( 1 ){
     
     // now that we are blocking the signals, we check to see if any arrived since last time we waited
     // if so, we return immediately
@@ -409,7 +437,7 @@ static void wait_on_signal(){
     // if not, wait on something to happen
     sigsuspend( &g_oldmask );
     
-  } while( 1 );
+  }
   
 }
 
@@ -427,29 +455,29 @@ static void pass_on_signal( int pid, int signum ){
       if( g_options.verbose ){
         fprintf( stderr, "pj::failed to pass on signal : invalid signal number : %d\n", signum );
         fflush( stderr );
-        break;
       }
+      break;
       
     case ESRCH:
       if( g_options.verbose ){
         fprintf( stderr, "pj::failed to pass on signal : child process not found\n" );
         fflush( stderr );
-        break;
       }
+      break;
       
     case EPERM:
       if( g_options.verbose ){
         fprintf( stderr, "pj::failed to pass on signal : permissions error\n" );
         fflush( stderr );
-        break ;
       }
+      break ;
       
     default:
       if( g_options.verbose ){
         fprintf( stderr, "pj::failed to pass on signal : bad kill return : %d\n", result );
         fflush( stderr );
-        break;
       }
+      break;
     }
   }
 }
@@ -472,6 +500,9 @@ static int find_children(){
     if( ! isnum( entry->d_name ) ){
       continue ;
     }
+    
+    // there's no race between readdir and stat since only we can reap our direct children,
+    //   so no one else is going to reap them out from under us.
     
     if( ! stat_to_child( entry, &g_children[ index ] ) ){
       closedir( dir );
@@ -499,7 +530,7 @@ static int stat_to_child( struct dirent * entry, struct Child * child ){
   
   char statpath[256];
   result = snprintf( statpath, sizeof( statpath ), "/proc/%s/stat", (char*)&entry->d_name );
-  if( result < 0 || result == sizeof( statpath ) ){
+  if( result < 0 || result >= sizeof( statpath ) ){
     return 0;
   }
   
@@ -542,49 +573,10 @@ static int stat_to_child( struct dirent * entry, struct Child * child ){
   // so this breaks if a process has a space in the name
   // not even just a child process. any process visible in /proc
   // thanks firefox (Web Content) subprocesses
-  // we'll need to count the number of spaces and break on that
+  // we'll need to find the last ')' that ends the command output
+  //   and continue from there
   // 
   {
-    unsigned ii      = 0 ;
-    unsigned nSpaces = 0 ;
-    while( 1 ){
-      switch( statdata[ ii ] ){
-      case 0:
-        // we didn't get the whole line
-        fprintf( stderr, "pj::failed to read full stat from /proc/<pid>/stat\n" );
-        close( fd );
-        return 0;
-        
-      case '\n':
-        // got it
-        goto doneCountingSpaces ;
-        
-      case ' ':
-        nSpaces ++ ;
-        // fallthrough
-        
-      default:
-        ii++ ;
-      }
-    }
-  doneCountingSpaces:;
-    
-    // we should have 52 items in there; 51 spaces
-    // but the name can be more than one
-    // we subtract 50 from nSpacs to get the number of items
-    // 
-    if( nSpaces < 51 ){
-      fprintf( stderr, "pj::found fewer than 51 spaces during stat\n" );
-      return 0;
-    }
-    
-    // nSpaces - 50 for name bits
-    // the +1 is to discard the leading pid
-    //   PID (name) ...
-    unsigned nSkipBits = nSpaces - 50 + 1 ;
-    
-    // now we scan along the line sscanf'ing the crap we want off of it
-    
     // first the pid
     // 
     if( sscanf( statdata, "%d", & child->pid ) != 1 ){
@@ -592,34 +584,22 @@ static int stat_to_child( struct dirent * entry, struct Child * child ){
       return 0;
     }
     
-    // now skip the proper number of spaces
-    char * cursor = statdata ;
-    while( 1 ){
-      switch( *cursor ){
-      case ' ':
-        nSkipBits  -- ;
-        cursor     ++ ;
-        if( ! nSkipBits ){
-          goto scandone ;
-        }
-        break ;
-        
-      case '\n':
-        fprintf( stderr, "pj::unexpected end of line\n" );
-        return 0 ;
-        
-      case '\0':
-        fprintf( stderr, "pj::unexpected null\n" );
-        return 0 ;
-        
-      default:
-        cursor ++ ;
-      }
-    }
-  scandone:;
+    char * p = strrchr( statdata, ')' );
     
+    if( ! p ){
+      // partial line? return 0 to signal failure to find_children and try again later
+      return 0;
+    }
+    
+    // pass ')'
+    p++;
+    
+    // pass ' ' after ')' to land on state character
+    p++;
+    
+    // now we scan what we want off the line
     result = sscanf(
-      cursor
+      p
       , "%c %d "
       , & child->state
       , & child->ppid
@@ -640,7 +620,10 @@ static int stat_to_child( struct dirent * entry, struct Child * child ){
   return 1 ;
 }
 
-int isnum( char * ss ){
+static int isnum( char * ss ){
+  if ( *ss == 0 ){
+    return 0;
+  }
   for( ; *ss ; ss++ ){
     if( ! ( *ss >= '0' && *ss <= '9' ) ){
       return 0;
@@ -649,7 +632,7 @@ int isnum( char * ss ){
   return 1;
 }
 
-static int kill_and_reap_children( int found ){
+static void kill_and_reap_children( int found ){
   int weNeedToReap = 0 ;
   
   for( int index = 0 ; index < found ; index++ ){
@@ -675,7 +658,7 @@ static int kill_and_reap_children( int found ){
   }
 }
 
-void kill_child( struct Child * child, char * description ){
+static void kill_child( struct Child * child, char * description ){
   if( -1 == kill( child->pid, SIGKILL ) ){
     fprintf( stderr, "pj::error killing %s child( %d ) : %d : %s\n"
              , description
@@ -691,7 +674,7 @@ void kill_child( struct Child * child, char * description ){
   }
 }
 
-int start_main_child( int argc, char ** argv ){
+static int start_main_child( char ** argv ){
   int childpid = fork();
   
   if( childpid == -1 ){
@@ -707,13 +690,15 @@ int start_main_child( int argc, char ** argv ){
     return childpid ;
   }
   
+  // _exit(...) avoids triggering exit(...) handlers, like flushes and atexit callbacks (though we're not using them)
+  
   if( -1 == execvp( *argv, argv ) ){
     fprintf( stderr, "pj::exec in fork failed : %d : %s\n", errno, strerror( errno ) );
-    exit(1);
+    _exit(1);
   }
   
   // we can't reach this as if execvp doesn't have an error, it will have replaced the process
   //
   fprintf( stderr, "pj::impossible error\n" );
-  exit(1);
+  _exit(1);
 }
